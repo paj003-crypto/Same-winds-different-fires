@@ -1,0 +1,47 @@
+{
+ "satellite": "GOES-18 (GOES-West)",
+ "products": [
+  "ABI-L2-FDCC",
+  "ABI-L2-DMWC",
+  "ABI-L2-DMWVC",
+  "ABI-L2-CMIPC"
+ ],
+ "start": "2025-01-07T16:00:00Z",
+ "end": "2025-01-09T16:00:00Z",
+ "fire_codes": [
+  10,
+  11,
+  12,
+  13,
+  14,
+  30,
+  31,
+  32,
+  33,
+  34
+ ],
+ "fires": {
+  "Palisades": {
+   "ignition": "2025-01-07T18:30:00Z",
+   "lat": 34.0725,
+   "lon": -118.5425,
+   "box": {
+    "west": -118.8,
+    "east": -118.45,
+    "south": 33.98,
+    "north": 34.15
+   }
+  },
+  "Eaton": {
+   "ignition": "2025-01-08T02:18:00Z",
+   "lat": 34.19,
+   "lon": -118.105,
+   "box": {
+    "west": -118.22,
+    "east": -117.98,
+    "south": 34.13,
+    "north": 34.3
+   }
+  }
+ }
+}

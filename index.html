@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Same Winds, Different Fires</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Same Winds, Different Fires</h1>
+    <p class="subtitle">How the Palisades and Eaton fires spread under one Santa Ana wind event, as seen by a weather satellite, January 7 to 9, 2025.</p>
+  </header>
+
+  <section class="intro">
+    <div class="intro-block">
+      <h2>What happened</h2>
+      <p>On January 7, 2025, strong, dry Santa Ana winds blew across Los Angeles. That morning, the <strong class="palisades-text">Palisades fire</strong> started in the hills near the coast. That evening, the <strong class="eaton-text">Eaton fire</strong> started in the foothills above Pasadena. Both fires burned under the same wind event, but they did not behave the same way.</p>
+      <p><strong>Our question:</strong> if both fires had the same winds, how and why did they grow so differently?</p>
+    </div>
+    <div class="intro-block">
+      <h2>What the satellite measures</h2>
+      <ul class="plain-list">
+        <li><strong>Where fire is burning.</strong> NOAA's GOES-18 satellite photographs the western U.S. every 5 minutes. Each image is split into squares about 2 km (1.2 miles) wide, and the satellite flags squares that are on fire.</li>
+        <li><strong>How strongly it is burning.</strong> For each burning square, it estimates <em>fire power</em>: the heat energy given off, in megawatts (MW). For scale, a large power plant produces about 1,000 MW.</li>
+        <li><strong>Wind.</strong> It estimates wind by tracking how clouds and water vapor move between images.</li>
+      </ul>
+    </div>
+    <div class="intro-block">
+      <h2>How to use this page</h2>
+      <ol class="plain-list">
+        <li>Press <strong>Play</strong> or drag the <strong>time slider</strong> to watch the fires grow.</li>
+        <li>Switch the <strong>clock</strong> to "Line up both fires" to compare them from the moment each one started.</li>
+        <li>Use the <strong>Show me</strong> buttons below to jump to the most important moments.</li>
+        <li><strong>Zoom and drag</strong> the map to look closely at one fire, and <strong>hover</strong> over any square, circle, star, arrow, or chart for details.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="findings">
+    <h2>What the data shows</h2>
+    <ul id="findings-list"></ul>
+  </section>
+
+  <section class="controls">
+    <div class="control-row">
+      <button id="play-button" type="button">Play</button>
+      <input id="time-slider" type="range" min="0" value="0" step="1" aria-label="Time">
+      <span id="time-label"></span>
+    </div>
+
+    <div class="control-row options">
+      <fieldset>
+        <legend>Clock</legend>
+        <label><input type="radio" name="mode" value="clock" checked> Real time <small>(see both fires as they happened)</small></label>
+        <label><input type="radio" name="mode" value="aligned"> Line up both fires <small>(hours since each one started)</small></label>
+      </fieldset>
+      <fieldset>
+        <legend>Wind</legend>
+        <label><input type="checkbox" id="show-wind" checked> Show satellite winds</label>
+        <label><input type="checkbox" id="low-wind-only"> Only winds near the ground</label>
+      </fieldset>
+    </div>
+
+    <div class="control-row">
+      <span class="moments-label">Jump to:</span>
+      <div id="key-moments"></div>
+    </div>
+  </section>
+
+
+  <div id="map-legend" class="legend-panel compact"></div>
+
+  <section class="views">
+    <div class="map-column">
+      <div class="map-toolbar">
+        <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+        <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+        <button id="zoom-reset" type="button">Reset view</button>
+        <button class="zoom-to-fire" type="button" data-fire="Palisades">Zoom to Palisades</button>
+        <button class="zoom-to-fire" type="button" data-fire="Eaton">Zoom to Eaton</button>
+        <span id="zoom-level">1.0×</span>
+      </div>
+      <p class="note">Drag the map to move around. Use the + and − buttons, or hold Ctrl (⌘ on a Mac) and scroll, to zoom. Hover over anything for details.</p>
+      <svg id="map" role="img" aria-label="Map of where the satellite detected fire in Los Angeles"></svg>
+      <p id="wind-note" class="note"></p>
+    </div>
+    <div class="side-column">
+      <div id="readout"></div>
+    </div>
+  </section>
+
+  <section class="charts">
+    <h2 id="power-chart-title">Fire power over time</h2>
+    <p id="power-chart-caption" class="note"></p>
+    <svg id="power-chart"></svg>
+    <div id="wind-chart-block">
+      <h2>How strong was the wind?</h2>
+      <p class="note">Typical satellite wind speed over Southern California each hour. The black line marks the time on the slider. Click or drag on either chart to move through time.</p>
+      <svg id="wind-chart"></svg>
+    </div>
+  </section>
+
+  <section class="data-notes">
+    <h2>About the data</h2>
+    <ul>
+      <li><strong>Source:</strong> NOAA GOES-18 satellite, from the public NOAA archive on AWS. Fire data: the Fire Detection product (<code>ABI-L2-FDCC</code>). Wind data: Derived Motion Winds (<code>ABI-L2-DMWC</code> and <code>ABI-L2-DMWVC</code>).</li>
+      <li><strong>Time window:</strong> Tuesday January 7, 8 AM to Thursday January 9, 8 AM, Pacific time. That is 576 satellite images, one every 5 minutes.</li>
+      <li><strong>What we kept:</strong> only squares over the Los Angeles area that the satellite marked as fire. We dropped its lowest-confidence detections because they are often false alarms.</li>
+      <li><strong>Which fire is which:</strong> we drew a box around each fire's area. Detections inside a box are labeled Palisades or Eaton, and everything else is shown in gray as "other fires."</li>
+      <li><strong>Smoothing:</strong> the fire power chart shows a 30-minute rolling average, because single images jump around when smoke or clouds block the view.</li>
+      <li><strong>Limits of the wind data:</strong> <span id="wind-count-note"></span></li>
+      <li><strong>Limits of the fire data:</strong> each square is about 2 km wide, so the map shows the general area burning, not exact fire edges. Thick smoke can hide fire for a few minutes, which causes some of the sudden drops in the chart.</li>
+    </ul>
+  </section>
+
+  <section id="writeup">
+    <h2>Write-up</h2>
+
+    <h3>Motivation</h3>
+    <p>[Write in your own words: why these two fires, and what question the visualization answers.]</p>
+
+    <h3>Design rationale</h3>
+    <p>[Visual encodings: why squares for burned areas and circles for active fire, why size for power, why one color per fire.]</p>
+    <p>[Interactions: why a time slider, why the "line up both fires" clock, why the wind compass, and why the Show me buttons.]</p>
+    <p>[Alternatives you considered and why you did not use them.]</p>
+
+    <h3>Data transformations</h3>
+    <p>[Filtering, labeling, smoothing, and the limits of the wind data.]</p>
+
+    <h3>Development process</h3>
+    <p>[How the work was split among the four of you, roughly how many people-hours it took, and what took the most time.]</p>
+  </section>
+
+  <div id="tooltip" role="tooltip"></div>
+  <script src="main.js"></script>
+</body>
+</html>
