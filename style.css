@@ -392,6 +392,18 @@ fieldset label {
   stroke-width: 0.8;
 }
 
+.wind-streamline {
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 1.2px rgba(55, 60, 63, 0.8));
+}
+
+.wind-direction-mark {
+  fill: #666666;
+  stroke: white;
+  stroke-width: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
 .legend text {
   font-size: 11px;
   fill: var(--text);

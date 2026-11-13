@@ -1,6 +1,7 @@
 const FIRE_NAMES = ["Palisades", "Eaton"];
 const FIRE_COLORS = { Palisades: "#e8743b", Eaton: "#3b6fd8", Other: "#9a9a9a" };
-const WIND_COLOR = "#1f7a70";
+const WIND_COLOR = "#087e9c";
+const WIND_STREAM_COLOR = "#ffffff";
 const MAP_REGION = { west: -118.95, east: -117.85, south: 33.85, north: 34.45 };
 const PACIFIC_OFFSET_MS = 8 * 60 * 60 * 1000;
 const SCAN_STEP_MS = 5 * 60 * 1000;
@@ -8,6 +9,11 @@ const HOUR_MS = 60 * 60 * 1000;
 const ALIGNED_STEP_HOURS = 1 / 12;
 const PLAY_INTERVAL_MS = 80;
 const LOW_WIND_PRESSURE_HPA = 700;
+const WIND_FIELD_RADIUS = 175;
+const WIND_BACKGROUND_BLEND = 0.18;
+const WIND_STREAM_SPACING = 40;
+const WIND_STREAM_STEP = 3;
+const WIND_STREAM_STEPS = 48;
 
 const mapWidth = 760;
 const mapHeight = 470;
@@ -47,10 +53,16 @@ let chartScales = {};
 let mapZoom;
 let zoomScale = 1;
 let activeTotals = {};
+let windStreamCacheKey = null;
+let windStreamCache = [];
 
 const formatPacific = d3.utcFormat("%a %b %-d, %-I:%M %p");
 const formatPacificHour = d3.utcFormat("%a %-I %p");
 const tooltip = d3.select("#tooltip");
+const windStreamLine = d3.line()
+  .x(point => point.x)
+  .y(point => point.y)
+  .curve(d3.curveCatmullRom.alpha(0.5));
 
 function toPacific(date) {
   return new Date(date.getTime() - PACIFIC_OFFSET_MS);
@@ -64,25 +76,160 @@ function describeSpeed(metersPerSecond) {
   return `${Math.round(metersPerSecond)} m/s (${Math.round(metersPerSecond * 2.237)} mph)`;
 }
 
-function windBarbPath(speed) {
-  let knots = Math.round((speed * 1.94384) / 5) * 5;
-  const marks = ["M0,0V-24"];
-  let y = -22;
+function interpolateWindAt(x, y, observations, backgroundWind) {
+  let totalWeight = 0;
+  let east = 0;
+  let north = 0;
+  let pressure = 0;
+  let nearestDistance = Infinity;
+  const radiusSquared = WIND_FIELD_RADIUS ** 2;
 
-  while (knots >= 50) {
-    marks.push(`M0,${y}L8,${y + 4}L0,${y + 8}Z`);
-    knots -= 50;
-    y += 8;
+  for (const observation of observations) {
+    const distanceX = observation.x - x;
+    const distanceY = observation.y - y;
+    const distanceSquared = distanceX * distanceX + distanceY * distanceY;
+    if (distanceSquared > radiusSquared) {
+      continue;
+    }
+
+    nearestDistance = Math.min(nearestDistance, Math.sqrt(distanceSquared));
+    const weight = 1 / (distanceSquared + 36);
+    totalWeight += weight;
+    east += observation.east * weight;
+    north += observation.north * weight;
+    pressure += observation.pressure * weight;
   }
-  while (knots >= 10) {
-    marks.push(`M0,${y}l7,3.5`);
-    knots -= 10;
-    y -= 3.5;
+
+  if (totalWeight === 0) {
+    return null;
   }
-  if (knots >= 5) {
-    marks.push(`M0,${y}l4,2`);
+
+  east /= totalWeight;
+  north /= totalWeight;
+  east = east * (1 - WIND_BACKGROUND_BLEND) + backgroundWind.east * WIND_BACKGROUND_BLEND;
+  north = north * (1 - WIND_BACKGROUND_BLEND) + backgroundWind.north * WIND_BACKGROUND_BLEND;
+  return {
+    east: east,
+    north: north,
+    speed: Math.hypot(east, north),
+    pressure: pressure / totalWeight,
+    nearestDistance: nearestDistance
+  };
+}
+
+function traceWindSide(startX, startY, observations, backgroundWind, direction) {
+  const points = [{ x: startX, y: startY }];
+  let x = startX;
+  let y = startY;
+
+  for (let stepIndex = 0; stepIndex < WIND_STREAM_STEPS; stepIndex += 1) {
+    const currentWind = interpolateWindAt(x, y, observations, backgroundWind);
+    if (currentWind === null || currentWind.speed < 0.5) {
+      break;
+    }
+
+    const speed = currentWind.speed;
+    const middleX = x + (currentWind.east / speed) * WIND_STREAM_STEP * direction * 0.5;
+    const middleY = y - (currentWind.north / speed) * WIND_STREAM_STEP * direction * 0.5;
+    const middleWind = interpolateWindAt(middleX, middleY, observations, backgroundWind);
+    if (middleWind === null || middleWind.speed < 0.5) {
+      break;
+    }
+
+    const nextX = x + (middleWind.east / middleWind.speed) * WIND_STREAM_STEP * direction;
+    const nextY = y - (middleWind.north / middleWind.speed) * WIND_STREAM_STEP * direction;
+    if (nextX < 0 || nextX > mapWidth || nextY < 0 || nextY > mapHeight) {
+      break;
+    }
+
+    let loopsBack = false;
+    for (let pointIndex = 0; pointIndex < points.length - 4; pointIndex += 1) {
+      if (Math.hypot(points[pointIndex].x - nextX, points[pointIndex].y - nextY) < 9) {
+        loopsBack = true;
+        break;
+      }
+    }
+    if (loopsBack) {
+      break;
+    }
+
+    x = nextX;
+    y = nextY;
+    points.push({ x: x, y: y });
   }
-  return marks.join("");
+
+  return points;
+}
+
+function addStreamlineMeander(points, phase) {
+  const amplitude = Math.min(20, points.length * 0.2);
+  return points.map((point, index) => {
+    const progress = index / (points.length - 1);
+    const previous = points[Math.max(0, index - 1)];
+    const next = points[Math.min(points.length - 1, index + 1)];
+    const tangentX = next.x - previous.x;
+    const tangentY = next.y - previous.y;
+    const tangentLength = Math.hypot(tangentX, tangentY) || 1;
+    const envelope = Math.sin(Math.PI * progress);
+    const offset = amplitude * Math.sin((4 * Math.PI * progress) + phase) * envelope;
+    return {
+      x: point.x - (tangentY / tangentLength) * offset,
+      y: point.y + (tangentX / tangentLength) * offset
+    };
+  });
+}
+
+function createWindStreamlines(hourWinds) {
+  const levels = state.lowWindOnly
+    ? [{ nearGround: true, rows: hourWinds }]
+    : [
+      { nearGround: false, rows: hourWinds.filter(d => d.pressure < LOW_WIND_PRESSURE_HPA) },
+      { nearGround: true, rows: hourWinds.filter(d => d.pressure >= LOW_WIND_PRESSURE_HPA) }
+    ];
+  const streamlines = [];
+
+  for (const level of levels) {
+    const observations = level.rows.map(d => {
+      const [x, y] = projection([d.lon, d.lat]);
+      return { ...d, x: x, y: y };
+    });
+    const backgroundWind = {
+      east: d3.mean(observations, d => d.east) || 0,
+      north: d3.mean(observations, d => d.north) || 0
+    };
+
+    for (let y = WIND_STREAM_SPACING / 2; y < mapHeight; y += WIND_STREAM_SPACING) {
+      for (let x = WIND_STREAM_SPACING / 2; x < mapWidth; x += WIND_STREAM_SPACING) {
+        const seedWind = interpolateWindAt(x, y, observations, backgroundWind);
+        if (seedWind === null || seedWind.speed < 0.5) {
+          continue;
+        }
+
+        const backward = traceWindSide(x, y, observations, backgroundWind, -1).reverse();
+        const forward = traceWindSide(x, y, observations, backgroundWind, 1).slice(1);
+        const points = backward.concat(forward);
+        if (points.length < 5) {
+          continue;
+        }
+        const endsNearEachOther = Math.hypot(
+          points[0].x - points[points.length - 1].x,
+          points[0].y - points[points.length - 1].y
+        ) < 18;
+        if (points.length >= 20 && endsNearEachOther) {
+          continue;
+        }
+
+        streamlines.push({
+          id: `${level.nearGround ? "ground" : "aloft"}|${x}|${y}`,
+          points: addStreamlineMeander(points, (x * 0.017 + y * 0.013) % (2 * Math.PI)),
+          speed: seedWind.speed,
+          nearGround: level.nearGround
+        });
+      }
+    }
+  }
+
+  return streamlines;
 }
 
 function possessive(name) {
@@ -258,7 +405,7 @@ function prepareData(detectionRows, timeseriesRows, windRows, metadata) {
 
   const lowWindCount = winds.filter(d => d.pressure >= LOW_WIND_PRESSURE_HPA).length;
   d3.select("#wind-count-note").text(
-    `The satellite can only measure wind where it sees clouds or water vapor moving. The Santa Ana air was very dry, so it found few readings. Only ${lowWindCount} of its ${winds.length} wind readings over Southern California were near the ground (an air pressure of ${LOW_WIND_PRESSURE_HPA} hPa or more). The rest were several kilometers up. The wind barbs and compass show the general wind pattern, not the exact gusts at each fire.`
+    `The satellite can only measure wind where it sees clouds or water vapor moving. The Santa Ana air was very dry, so it found few readings. Only ${lowWindCount} of its ${winds.length} wind readings over Southern California were near the ground (an air pressure of ${LOW_WIND_PRESSURE_HPA} hPa or more). The rest were several kilometers up. The streamlines, direction marks, and compass show the general wind pattern, not the exact gusts at each fire.`
   );
 }
 
@@ -296,9 +443,10 @@ function drawMap(counties) {
     .attr("vector-effect", "non-scaling-stroke")
     .attr("d", path);
 
+  mapArea.append("g").attr("id", "wind-layer");
+  mapArea.append("g").attr("id", "wind-direction-layer");
   mapArea.append("g").attr("id", "pixel-layer");
   mapArea.append("g").attr("id", "active-layer");
-  mapArea.append("g").attr("id", "wind-layer");
 
   const leftEdge = projection([-118.422, 34.1])[0];
   const rightEdge = projection([-118.4, 34.1])[0];
@@ -486,7 +634,7 @@ function drawAlignedBanner(svg) {
     .attr("text-anchor", "middle")
     .attr("font-size", 11)
     .attr("fill", "white")
-    .text("Other fires and map wind arrows are hidden in this view. Choose Real time to see them.");
+    .text("Other fires and map wind barbs are hidden in this view. Choose Real time to see them.");
 }
 
 function compassName(degrees) {
@@ -663,19 +811,29 @@ function drawLegend() {
   const windSection = legend.append("div");
   windSection.append("h4").text("Wind");
   addLegendRow(windSection, swatch => {
-    swatch.append("path")
-      .attr("d", "M9,17V1M9,3l7,3.5M9,8l7,3.5M9,13l4,2")
+    swatch.append("rect")
+      .attr("width", 30)
+      .attr("height", 20)
+      .attr("rx", 2)
+      .attr("fill", "#8f9699");
+    swatch.selectAll("path")
+      .data([0, 1, 2])
+      .join("path")
+      .attr("d", (d, index) => `M1,${5 + index * 5}C10,${3 + index * 5} 15,${15 - index * 4} 27,${4 + index * 5}`)
       .attr("fill", "none")
-      .attr("stroke", WIND_COLOR)
-      .attr("stroke-width", 1.8);
-  }, 24, 20, "Satellite wind this hour", "Shaft points where wind comes from; more feathers mean faster wind");
-  addLegendRow(windSection, swatch => {
-    swatch.append("circle").attr("cx", 10).attr("cy", 10).attr("r", 8).attr("fill", "none").attr("stroke", "#c9ced6");
-    swatch.append("line")
-      .attr("x1", 10).attr("y1", 4).attr("x2", 10).attr("y2", 15)
-      .attr("stroke", WIND_COLOR).attr("stroke-width", 2)
+      .attr("stroke", WIND_STREAM_COLOR)
+      .attr("stroke-width", (d, index) => 0.9 + index * 0.65)
       .attr("stroke-linecap", "round");
-  }, 34, 20, "Wind compass (bottom right of map)", "Average wind for all of Southern California");
+  }, 30, 20, "Interpolated wind flow", "White curves show wind; thicker, more opaque lines are faster");
+  addLegendRow(windSection, swatch => {
+    swatch.append("line")
+      .attr("x1", 4).attr("y1", 10).attr("x2", 25).attr("y2", 10)
+      .attr("stroke", WIND_COLOR)
+      .attr("stroke-width", 2);
+    swatch.append("path")
+      .attr("d", "M25,6L31,10L25,14Z")
+      .attr("fill", WIND_COLOR);
+  }, 30, 20, "Regional compass", "Arrow shows the average wind direction");
 }
 
 function updateMap(value) {
@@ -726,13 +884,13 @@ function updateWind(value) {
   } else if (winds.length === 0) {
     noteText = "No satellite wind vectors were available for this window.";
   } else if (state.mode === "aligned") {
-    noteText = "The fires are lined up by their start times, so the map cannot show one moment of wind. The compass dials show each fire's regional wind; map wind barbs appear only in Real time.";
+    noteText = "The fires are lined up by their start times, so the map cannot show one moment of wind. The compass shows each fire's regional wind; map flow lines appear only in Real time.";
   } else {
     visibleWinds = windsForHour(value);
     const insideMap = visibleWinds.filter(d => d.lon >= MAP_REGION.west && d.lon <= MAP_REGION.east && d.lat >= MAP_REGION.south && d.lat <= MAP_REGION.north);
-    noteText = `${insideMap.length} wind readings over this map area this hour. Each barb shows wind direction and speed at one satellite observation; these scattered marks are not a continuous wind field.`;
+    noteText = `${insideMap.length} wind readings over this map area this hour. Flow direction is interpolated from nearby satellite readings; the gentle meander is visual styling. Thicker, more opaque lines indicate faster wind, and lines fade where measurements are sparse.`;
     if (insideMap.length === 0) {
-      noteText = "No wind readings over this map area this hour, because the dry Santa Ana air gave the satellite little to track. The compass in the corner shows the regional average.";
+      noteText = "No direct wind readings over this map area this hour. Any visible flow lines are interpolated from nearby satellite samples and fade where measurements are sparse.";
     }
   }
 
@@ -740,27 +898,48 @@ function updateWind(value) {
   d3.select("#aligned-banner").style("display", state.mode === "aligned" ? null : "none");
   updateWindCompass(value);
 
+  const streamKey = state.showWind && state.mode === "clock"
+    ? `${Math.floor(value.getTime() / HOUR_MS)}|${state.lowWindOnly}`
+    : null;
+  if (streamKey !== windStreamCacheKey) {
+    windStreamCacheKey = streamKey;
+    windStreamCache = streamKey === null ? [] : createWindStreamlines(visibleWinds);
+  }
+
   d3.select("#wind-layer").selectAll("path")
-    .data(visibleWinds)
+    .data(windStreamCache, d => d.id)
     .join("path")
-    .attr("d", d => windBarbPath(d.speed))
-    .attr("transform", d => {
-      const [x, y] = projection([d.lon, d.lat]);
-      return `translate(${x},${y}) rotate(${d.directionFrom}) scale(${1 / zoomScale})`;
-    })
+    .attr("class", "wind-streamline")
+    .attr("d", d => windStreamLine(d.points))
     .attr("fill", "none")
-    .attr("stroke", WIND_COLOR)
-    .attr("stroke-width", d => d.pressure >= LOW_WIND_PRESSURE_HPA ? 2 : 1.4)
+    .attr("stroke", WIND_STREAM_COLOR)
+    .attr("stroke-width", d => (0.55 + Math.min(d.speed, 25) / 22) * (d.nearGround ? 1.15 : 1))
     .attr("vector-effect", "non-scaling-stroke")
     .attr("stroke-linecap", "round")
-    .attr("opacity", d => (d.pressure >= LOW_WIND_PRESSURE_HPA ? 1 : 0.7))
-    .attr("pointer-events", "stroke")
-    .on("mouseover", (event, d) => {
-      const level = d.pressure >= LOW_WIND_PRESSURE_HPA ? "near the ground" : "several kilometers up";
-      showTooltip(event, `<strong>Satellite wind</strong><br>${describeTime(d.time)}<br>Speed: ${describeSpeed(d.speed)}<br>Height: ${level} (${Math.round(d.pressure)} hPa)`);
-    })
-    .on("mousemove", moveTooltip)
-    .on("mouseout", hideTooltip);
+    .attr("opacity", d => (0.38 + Math.min(d.speed / 20, 1) * 0.22) * (d.nearGround ? 1 : 0.82))
+    .attr("pointer-events", "none");
+
+  const directionMarks = windStreamCache.flatMap((streamline, index) => {
+    if (index % 5 !== 0 || streamline.points.length < 12) {
+      return [];
+    }
+    return [0.38, 0.68].map(fraction => {
+      const pointIndex = Math.round((streamline.points.length - 1) * fraction);
+      const before = streamline.points[pointIndex - 1];
+      const point = streamline.points[pointIndex];
+      const after = streamline.points[pointIndex + 1];
+      const angle = Math.atan2(after.y - before.y, after.x - before.x) * (180 / Math.PI);
+      return { id: `${streamline.id}|${fraction}`, x: point.x, y: point.y, angle: angle };
+    });
+  });
+
+  d3.select("#wind-direction-layer").selectAll("path")
+    .data(directionMarks, d => d.id)
+    .join("path")
+    .attr("class", "wind-direction-mark")
+    .attr("d", "M-3.5,-2.5L4,0L-3.5,2.5Z")
+    .attr("transform", d => `translate(${d.x},${d.y}) rotate(${d.angle}) scale(${1 / zoomScale})`)
+    .attr("pointer-events", "none");
 }
 
 function drawCharts() {
